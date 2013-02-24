@@ -1,0 +1,280 @@
+####################################################################################################################################
+<#
+.SYNOPSIS
+    Compare MD5 HASH keys on the source and destination. Any modifications result in the source file copying over to the destination.
+
+.FUNCTIONALITY
+    Computer Backup Script
+
+.DESCRIPTION
+    The MD5 key on a file is modified each time a file is changed. When a source file has a different hash key than the 
+    destination, the source will overwrite the destination file.
+
+.NOTES
+    The final version will read multiple source destinations from a text file within a specified folder.
+    The path will appear like this: C:\Downloads\Music and the destination will appear as a network path.
+
+.VERSION
+    Versioning format (new for 2.*): major.minor[.maintenance]
+    -major - considererd significant rewrite. ex: v1.* was in vbscript, v2.* is in powershell. A complete rewrite from scratch would
+    be v3 or a format change (aka to not run remotely etc..)
+    -minor - considererd significant feature update. ex: an update that adds additional fields to the database, an update that would
+    modify settings on the destination server
+    -maintenance - considered configuration update. ex: updated passwords, minor output formatting changes, minor bug fixes
+    v1.0 (2012-Oct-05) - Beta Version - Build new backup script - logging is working. Only certain files are getting backed up at the present time.
+    v1.5 (2012-Dec-03) - Zip functions to keep log files to a minimum is working
+    v1.6 (2013-Feb-20) - minor tweaks to code and comments. Modified the LogWrite function.
+
+.FUTURE
+    - Clear logs from the destination.
+    - Try/Catch statement improvements. Instead of just catching the errors and logging them, if an exception is caught, try to
+    perform a different set of actions instead of just tossing error messages.
+    - Send email messages if errors are present or the scheduled task runs into issues. Otherwise I'll assume it works just fine.
+    - The more important folders (such as the powershell scripts folder) should get copied to the H:\ drive at work and to my
+    computer at home (this will be done via psremoting).
+    - Performance improvements
+#>
+####################################################################################################################################
+
+
+
+#- Defining the path for the LogWrite function below
+$year = (Get-Date).Year;
+$month = (Get-Date).Month;
+$day = (Get-Date).Day;
+$outFilePath = "C:\PowerShell\ComputerBackup\Logs";
+$outFile = $outFilePath + "\" + "$year-$month-$day.log";
+
+
+#*=============================================
+#* Function: LogWrite
+#* Created: 12/03/2012
+#* Author: Michael Koegel (with help from the references)
+#* Arguments: 1 - $logString
+#* Usage: LogWrite "C:\test was created";
+#* Ref: http://stackoverflow.com/questions/7834656/create-log-file-in-powershell
+#*==============================================
+#* Purpose: create a new zip file (empty)
+Function LogWrite ([string]$logString)
+{
+    $time = get-date -Format "yyyy-MMM-dd -HH:mm:ss- ";
+    Add-content $outFile -value "$time $logString"
+} #end function LogWrite
+
+
+
+#*=============================================
+#* Function: New-Zip
+#* Created: 12/03/2012
+#* Author: Michael Koegel (with help from the references)
+#* Arguments: 1 - $zipfilename
+#* Usage: new-zip c:\demo\myzip.zip
+#* Ref: http://blogs.msdn.com/b/daiken/archive/2007/02/12/compress-files-with-windows-powershell-then-package-a-windows-vista-sidebar-gadget.aspx
+#* Ref: http://learningpcs.blogspot.com/2010/07/powershell-working-with-zip-files.html
+#*==============================================
+#* Purpose: create a new zip file (empty)
+#*==============================================
+function New-Zip ([string]$zipfilename,$debugMode=0)
+{
+  set-content $zipfilename ("PK" + [char]5 + [char]6 + ("$([char]0)" * 18))
+	(Get-ChildItem $zipfilename).IsReadOnly = $false
+} #end New-Zip
+
+
+
+#*=============================================
+#* Function: Add-Zip
+#* Created: 12/03/2012
+#* Author: Michael Koegel (with help from the references)
+#* Arguments: 1 - $zipfilename
+#* Usage: dir c:\demo\files\*.* -Recurse | add-Zip c:\demo\myzip.zip
+#* Ref: http://blogs.msdn.com/b/daiken/archive/2007/02/12/compress-files-with-windows-powershell-then-package-a-windows-vista-sidebar-gadget.aspx
+#* Ref: http://learningpcs.blogspot.com/2010/07/powershell-working-with-zip-files.html
+#*==============================================
+#* Purpose: Add contents to the zip file
+#*==============================================
+function Add-Zip ([string]$zipfilename,$debugMode=0)
+{
+	if(-not (test-path($zipfilename)))
+    {
+        try
+        {
+            New-Zip $zipfilename;
+            LogWrite "$zipfilename was created";
+        } #end try
+        catch [System.Exception]
+		{
+            LogWrite $_.Exception.ToString();
+		} #end catch
+	} #end if
+    
+    #generating a shell application to start the ZIP file
+	$shellApplication = New-Object -com Shell.Application;
+	$zipPackage = $shellApplication.NameSpace($zipfilename);
+
+    try
+    {
+        #This will take each file passed through this function and zip them up.
+        $input | ForEach-Object{
+            $zipPackage.MoveHere($_.FullName,0x14)
+            LogWrite "$input was added to the zip file";
+            Start-sleep -milliseconds 200
+	    } #end ForEach-Object
+    } #end try
+    catch [System.Exception]
+	{
+        LogWrite $_.Exception.ToString();
+	} #end catch
+    
+    #removing the variables (disposing the shell com objects)
+    remove-variable shellApplication
+    remove-variable zipPackage
+} #end function Add-Zip
+
+
+
+#*=============================================
+#* Function: CopyModifiedFiles
+#* Created: 10/05/2012
+#* Author: Michael Koegel
+#* Arguments: 3 - $fileToCheck, $destPath, $sourcePath
+#* Usage: CopyModifiedFiles C:\test\*.log \\192.168.1.1\backup $($entry.DirectoryName)
+#* Ref: http://stackoverflow.com/questions/10521061/how-to-get-a-md5-checksum-in-powershell
+#*=============================================
+#* Purpose: computer backup using MD5 hash comparison
+#*=============================================
+function CopyModifiedFiles ($fileToCheck, $destPath, $sourcePath)
+{
+    #as long as there is a file name, continue through the checks
+	if (($fileToCheck.fullname -ne "") -and ($fileToCheck.FullName -ne $null))
+	{
+        #checking to see if the file is a directory or not
+        $isdir = $fileToCheck.FullName | Where-Object {$_.PSIsContainer -eq $true};
+		$someFilePath = $fileToCheck.FullName;
+        $someDestFilePath = "$(($fileToCheck.Fullname).replace("C:\","$destPath"))";
+
+        #if $isdir is a directory, start working with it
+        if ((Test-Path $isdir) -eq $false)
+        {
+            #This is the .NET method to obtain the MD5 on the folders
+		    $foldermd5 = new-object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider;
+
+            #if the folder does not exist, process here
+            if ((test-path "$(($fileToCheck.FullName).replace("C:\","$destPath"))\$($fileToCheck.Name)") -eq $false)
+            {
+                #attempting to create the folder in the destination path
+	            new-item "$(($fileToCheck.Fullname).replace("C:\","$destPath"))" -ItemType directory -Force;
+                LogWrite "$someDestFilePath was created";
+            } #end if
+            else
+            {
+                #This actually grabs the HASH and converts it to a string. It also eliminates dashes ( - ) in the hash code
+			    $hashFolderSource = ([System.BitConverter]::ToString($foldermd5.ComputeHash([System.IO.File]::ReadAllBytes($fileToCheck)))).replace("-","");
+                $hashFolderDestination = ([System.BitConverter]::ToString($foldermd5.ComputeHash([System.IO.File]::ReadAllBytes($someDestFilePath)))).replace("-","");
+
+                #as long as hashFolderSource and hashFolderDestination are not the same, it will need to copy the source to the destination (backup location)
+                if ($hashFolderSource -ne $hashFolderDestination)
+                {
+	                new-item "$(($fileToCheck.Fullname).replace("C:\","$destPath"))\$($fileToCheck.Name)" -ItemType "Directory" -Force;
+                    LogWrite "$someDestFilePath was created";
+                } #end if
+                else
+                {
+                    LogWrite "$destinationFolder already exists and the hash keys are the same. Ignoring folder copy!";
+                } #end else
+            } #end else
+        } #end if
+        else
+        {
+            #this section works with files. If the file exists, it needs to start out with the md5 checks to see if anything has been changed.
+            if ((test-path "$(($fileToCheck.Fullname).replace("C:\","$destPath"))") -eq $true)
+            {
+                #This is the .NET method to obtain the MD5 on a file
+		        $md5 = new-object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider;
+
+                #This actually grabs the HASH and converts it to a string. It also eliminates dashes ( - ) in the hash code
+			    $hashSource = ([System.BitConverter]::ToString($md5.ComputeHash([System.IO.File]::ReadAllBytes($fileToCheck)))).replace("-","");
+                $hashDestination = ([System.BitConverter]::ToString($md5.ComputeHash([System.IO.File]::ReadAllBytes($someDestFilePath)))).replace("-","");
+
+                #this processes as long as the hashSource and hashDestination are not the same (hash keys).
+                if ($hashSource -ne $hashDestination)
+                {
+                    try
+                    {
+                        copy-item $fileToCheck.Fullname -Destination $destPath\$fileToCheck -Recurse -Force;
+                        LogWrite "$fileToCheck was copied to $destPath";
+                    } #end try
+                    catch [System.Exception]
+                    {
+                        LogWrite $_.Exception.ToString();
+                    } #end catch
+                } #end if
+                else
+                {
+                    LogWrite "$fileToCheck has not been modified. There is no need to overwrite it.";
+                } #end else
+            } #end if
+            else
+            {
+                try
+                {
+                    #this will copy files if they do not exist. This section doesn't need bother with hash key verification since the file 
+                    #does not already exist.
+                    copy-item $fileToCheck.FullName -Destination $destPath -Force;
+                    LogWrite "$fileToCheck was copied to $destPath";
+                } #end try
+                catch [System.Exception]
+                {
+                    LogWrite $_.Exception.ToString();
+                } #end catch
+            } #end else
+        } #end else
+	} #end if statement
+} #end function CopyModifiedFiles
+
+
+
+#------------------------------------------------------------------------
+#- This is where the paths are defined
+#------------------------------------------------------------------------
+$destPath = "\\192.168.1.15\Backup\Laptop\BackUpLaptop";
+$sourcePath = @(Get-Content "C:\PowerShell\ComputerBackup\PathsToBackup.txt");
+$logsDestination = "C:\PowerShell\ComputerBackup\Logs";
+$zipArchive = "C:\PowerShell\ComputerBackup\Logs\Logs.zip";
+
+
+
+#------------------------------------------------------------------------
+#- This section works with the zip archive and logs
+#------------------------------------------------------------------------
+if ((test-path $zipArchive) -eq $false)
+{
+	#as long as the zip archine does not exist, create it by passing the name to the New-Zip function
+    New-Zip $zipArchive;
+    #setting a sleep function to give the system time to create the file
+    Start-Sleep -milliseconds 200;
+
+
+    get-childitem $logsDestination\*.log | Where-Object {$_.LastWriteTime -le (get-date).AddDays(-4)} | add-Zip $zipArchive;
+}#end if
+else
+{
+    get-childitem $logsDestination\*.log | Where-Object {$_.LastWriteTime -le (get-date).AddDays(-4)} | add-Zip $zipArchive;
+} #end else
+
+
+
+#------------------------------------------------------------------------
+#- this is looping through all the directories I have listed in the $sourcepath
+#------------------------------------------------------------------------
+foreach ($path in $sourcePath)
+{
+    #getting a full directory listing of the source path
+    $dirList= @(Get-ChildItem $path -Recurse);
+
+    #passing each file to the function.
+    foreach ($entry in $dirList)
+    {
+        CopyModifiedFiles $entry $destPath $($entry.DirectoryName);
+    } #end foreach
+} #end foreach
