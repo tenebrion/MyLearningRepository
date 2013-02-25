@@ -76,8 +76,8 @@ Function LogWrite ([string]$logString)
 #*==============================================
 function New-Zip ([string]$zipfilename,$debugMode=0)
 {
-  set-content $zipfilename ("PK" + [char]5 + [char]6 + ("$([char]0)" * 18))
-	(Get-ChildItem $zipfilename).IsReadOnly = $false
+   set-content $zipfilename ("PK" + [char]5 + [char]6 + ("$([char]0)" * 18))
+   (Get-ChildItem $zipfilename).IsReadOnly = $false
 } #end New-Zip
 
 
@@ -103,10 +103,10 @@ function Add-Zip ([string]$zipfilename,$debugMode=0)
             LogWrite "$zipfilename was created";
         } #end try
         catch [System.Exception]
-		{
+	{
             LogWrite $_.Exception.ToString();
-		} #end catch
-	} #end if
+	} #end catch
+    } #end if
     
     #generating a shell application to start the ZIP file
 	$shellApplication = New-Object -com Shell.Application;
@@ -116,9 +116,9 @@ function Add-Zip ([string]$zipfilename,$debugMode=0)
     {
         #This will take each file passed through this function and zip them up.
         $input | ForEach-Object{
-            $zipPackage.MoveHere($_.FullName,0x14)
-            LogWrite "$input was added to the zip file";
-            Start-sleep -milliseconds 200
+	        $zipPackage.MoveHere($_.FullName,0x14)
+	        LogWrite "$input was added to the zip file";
+	        Start-sleep -milliseconds 200
 	    } #end ForEach-Object
     } #end try
     catch [System.Exception]
@@ -253,7 +253,6 @@ if ((test-path $zipArchive) -eq $false)
     New-Zip $zipArchive;
     #setting a sleep function to give the system time to create the file
     Start-Sleep -milliseconds 200;
-
 
     get-childitem $logsDestination\*.log | Where-Object {$_.LastWriteTime -le (get-date).AddDays(-4)} | add-Zip $zipArchive;
 }#end if
